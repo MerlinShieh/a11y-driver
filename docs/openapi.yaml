@@ -213,8 +213,21 @@ paths:
                 x: {type: integer}
                 y: {type: integer}
                 timeoutMs: {type: integer, default: 3000}
+                retries: {type: integer, default: 0, maximum: 5}
+                retryIntervalMs: {type: integer, default: 300}
+                opId: {type: string}
       responses:
-        '200': {$ref: '#/components/responses/BoolResult'}
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  error: {type: string}
+                  attempts: {type: integer}
+                  elapsedMs: {type: integer}
 
   /v1/longclick:
     post:
@@ -347,6 +360,44 @@ paths:
                   kind: {type: string}
                   elapsedMs: {type: integer}
 
+  /v1/cancel:
+    post:
+      summary: 取消长任务
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                opId: {type: string}
+                all: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  cancelled: {type: integer}
+
+  /v1/ops:
+    get:
+      summary: 运行中的操作
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  running:
+                    type: array
+                    items: {type: string}
+
   /v1/logcat:
     get:
       summary: 拉取设备日志（仅编排器）
@@ -411,6 +462,11 @@ components:
             - SCREENSHOT_FAILED
             - UNKNOWN_COMMAND
             - NO_ROUTE
+            - ACTION_FAILED
+            - CANCELLED
+            - TIMEOUT
+            - SCROLL_TIMEOUT
+            - BAD_ARGS
 
     Channel:
       type: object

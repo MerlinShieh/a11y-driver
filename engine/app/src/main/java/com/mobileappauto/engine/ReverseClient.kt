@@ -7,17 +7,14 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.Executors
 
 /**
  * 反连通道：由手机主动连到 PC 上的 hub，再收发 JSON 行协议。
  *
- * 为什么需要它：模拟器 / 很多真实网络环境是 NAT，PC 无法直连手机端口，
- * 但手机可以连出去（模拟器里 PC 的地址固定是 10.0.2.2）。
- *
- * 协议（一行一个 JSON）：
- *   设备 → hub : {"type":"hello","token":"...","device":{"model":"...","sdk":34}}
- *   hub → 设备 : {"id":"1","cmd":"click","payload":{"selector":{"text":"设置"}}}
- *   设备 → hub : {"id":"1","ok":true,...}
+ * 并发模型：
+ *   读线程只负责收包，命令交给固定线程池执行，回包用写锁串行化。
+ *   否则一条长任务（wait/scroll）会把整条连接占死，`/v1/cancel` 永远递不进去。
  */
 class ReverseClient(
     private val host: String,
@@ -32,7 +29,13 @@ class ReverseClient(
     @Volatile
     private var socket: Socket? = null
 
+    /** 连接代号：重连后旧线程的迟到回包必须丢弃 */
+    @Volatile
+    private var generation = 0
+
     private var thread: Thread? = null
+    private val workers = Executors.newFixedThreadPool(4)
+    private val writeLock = Any()
 
     fun start() {
         if (thread != null) return
@@ -51,6 +54,7 @@ class ReverseClient(
         }
         socket = null
         thread = null
+        workers.shutdownNow()
     }
 
     private fun loop() {
@@ -61,7 +65,9 @@ class ReverseClient(
                 s.connect(InetSocketAddress(host, port), 5000)
                 s.tcpNoDelay = true
                 socket = s
+                generation++
 
+                val gen = generation
                 val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
                 val writer = BufferedWriter(OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8))
 
@@ -81,7 +87,7 @@ class ReverseClient(
                 while (running) {
                     val line = reader.readLine() ?: break
                     if (line.isBlank()) continue
-                    handleLine(line, writer)
+                    dispatch(line, writer, gen)
                 }
             } catch (t: Throwable) {
                 if (running) onState("断开：${t.message ?: t.toString()}", false)
@@ -104,29 +110,37 @@ class ReverseClient(
         onState("已停止", false)
     }
 
-    private fun handleLine(line: String, writer: BufferedWriter) {
+    /** 读线程只做解析，命令丢给线程池，避免长任务阻塞收包 */
+    private fun dispatch(line: String, writer: BufferedWriter, gen: Int) {
         val id: String
-        val result: JSONObject
+        val cmd: String
+        val payload: JSONObject
         try {
             val msg = JSONObject(line)
             id = msg.optString("id", "")
-            val cmd = msg.optString("cmd", "")
-            val payload = msg.optJSONObject("payload") ?: JSONObject()
-            result = Commands.exec(cmd, payload)
+            cmd = msg.optString("cmd", "")
+            payload = msg.optJSONObject("payload") ?: JSONObject()
         } catch (t: Throwable) {
-            try {
-                sendLine(writer, JSONObject().put("ok", false).put("error", "BAD_REQUEST: ${t.message}"))
-            } catch (ignored: Throwable) {
-                // connection is gone
-            }
             return
         }
 
-        result.put("id", id)
-        try {
-            sendLine(writer, result)
-        } catch (t: Throwable) {
-            // 连接已断，交给外层重连
+        workers.submit {
+            if (gen != generation || !running) return@submit
+            val result = try {
+                Commands.exec(cmd, payload)
+            } catch (t: Throwable) {
+                JSONObject().put("ok", false).put("error", t.toString())
+            }
+            result.put("id", id)
+            synchronized(writeLock) {
+                if (gen == generation && running) {
+                    try {
+                        sendLine(writer, result)
+                    } catch (t: Throwable) {
+                        // 连接已断，交给外层重连
+                    }
+                }
+            }
         }
     }
 

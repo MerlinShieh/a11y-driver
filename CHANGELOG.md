@@ -11,6 +11,12 @@
 - GitHub Actions CI：Python 单测、脱敏检查、Android 构建与单测
 - Gradle Wrapper（CI 与本地构建一致）
 - 脱敏检查 Python 实现，跨平台可进 CI
+- 任务取消与重试：`/v1/cancel`、`/v1/ops`、`retries` 参数
+- 结构化错误码：`ACTION_FAILED` / `CANCELLED` / `TIMEOUT` / `SCROLL_TIMEOUT` / `BAD_ARGS`
+
+### 修复
+- 反连通道改为并发：此前一条长任务会占死连接，导致 `/v1/cancel` 无法送达
+- `scroll` 超时不再静默返回空，改为带 `SCROLL_TIMEOUT` 与 `swipes`
 
 ### 变更
 - 项目更名为 **A11y Driver**，仓库迁移至 `MerlinShieh/a11y-driver`（应用包名 `com.mobileappauto.engine` 暂未改动）

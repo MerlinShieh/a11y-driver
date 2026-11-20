@@ -105,17 +105,43 @@ class EngineClient:
     # ---------- 动作 ----------
 
     def click(self, selector: dict | None = None, x: int | None = None, y: int | None = None,
-              timeout: float = 3.0) -> bool:
+              timeout: float = 3.0, retries: int = 0, retry_interval: float = 0.3,
+              op_id: str | None = None) -> bool:
         payload: dict = {"timeoutMs": int(timeout * 1000)}
         if selector:
             payload["selector"] = selector
         if x is not None and y is not None:
             payload["x"], payload["y"] = x, y
+        if retries:
+            payload["retries"] = retries
+            payload["retryIntervalMs"] = int(retry_interval * 1000)
+        if op_id:
+            payload["opId"] = op_id
         return bool(self._json("/v1/click", "POST", payload).get("ok"))
 
-    def long_click(self, selector: dict, timeout: float = 3.0) -> bool:
-        return bool(self._json("/v1/longclick", "POST",
-                               {"selector": selector, "timeoutMs": int(timeout * 1000)}).get("ok"))
+    def click_detail(self, selector: dict | None = None, x: int | None = None,
+                     y: int | None = None, timeout: float = 3.0, retries: int = 0,
+                     op_id: str | None = None) -> dict:
+        """返回完整结果（含 error / attempts / elapsedMs）"""
+        payload: dict = {"timeoutMs": int(timeout * 1000)}
+        if selector:
+            payload["selector"] = selector
+        if x is not None and y is not None:
+            payload["x"], payload["y"] = x, y
+        if retries:
+            payload["retries"] = retries
+        if op_id:
+            payload["opId"] = op_id
+        return self._json("/v1/click", "POST", payload)
+
+    def long_click(self, selector: dict, timeout: float = 3.0, retries: int = 0,
+                   op_id: str | None = None) -> bool:
+        payload = {"selector": selector, "timeoutMs": int(timeout * 1000)}
+        if retries:
+            payload["retries"] = retries
+        if op_id:
+            payload["opId"] = op_id
+        return bool(self._json("/v1/longclick", "POST", payload).get("ok"))
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> bool:
         return bool(self._json("/v1/swipe", "POST",
@@ -123,16 +149,33 @@ class EngineClient:
                                 "durationMs": duration_ms}).get("ok"))
 
     def scroll_into_view(self, selector: dict, down: bool = True,
-                         max_swipes: int = 8, timeout: float = 2.0) -> dict | None:
-        r = self._json("/v1/scroll", "POST", {
-            "selector": selector, "down": down, "maxSwipes": max_swipes,
-            "timeoutMs": int(timeout * 1000)}, timeout=40)
+                         max_swipes: int = 8, timeout: float = 2.0,
+                         op_id: str | None = None) -> dict | None:
+        payload = {"selector": selector, "down": down, "maxSwipes": max_swipes,
+                   "timeoutMs": int(timeout * 1000)}
+        if op_id:
+            payload["opId"] = op_id
+        r = self._json("/v1/scroll", "POST", payload, timeout=40)
         return r.get("node") if r.get("ok") else None
 
-    def input(self, selector: dict, text: str, timeout: float = 3.0) -> bool:
-        return bool(self._json("/v1/input", "POST",
-                               {"selector": selector, "text": text,
-                                "timeoutMs": int(timeout * 1000)}).get("ok"))
+    def input(self, selector: dict, text: str, timeout: float = 3.0, retries: int = 0,
+              op_id: str | None = None) -> bool:
+        payload = {"selector": selector, "text": text, "timeoutMs": int(timeout * 1000)}
+        if retries:
+            payload["retries"] = retries
+        if op_id:
+            payload["opId"] = op_id
+        return bool(self._json("/v1/input", "POST", payload).get("ok"))
+
+    # ---------- 取消 ----------
+
+    def cancel(self, op_id: str | None = None, all_ops: bool = False) -> int:
+        """取消指定操作或全部，返回被取消的数量"""
+        payload = {"all": True} if all_ops else {"opId": op_id or ""}
+        return int(self._json("/v1/cancel", "POST", payload).get("cancelled", 0))
+
+    def running_ops(self) -> list[str]:
+        return self._json("/v1/ops").get("running", [])
 
     def global_action(self, action: str) -> bool:
         return bool(self._json("/v1/global", "POST", {"action": action}).get("ok"))

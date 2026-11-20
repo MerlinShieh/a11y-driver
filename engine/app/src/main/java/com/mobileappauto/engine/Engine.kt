@@ -17,24 +17,44 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+/** 滚动查找的结果 */
+data class ScrollResult(
+    val node: AccessibilityNodeInfo?,
+    val swipes: Int,
+    val elapsedMs: Long,
+    val error: String?
+)
+
 /**
  * 动作层：所有对手机的操作都在这里，统一走无障碍服务。
+ *
+ * 每个可能耗时的操作都接受 `opId`，用于 `/v1/cancel` 中断；
+ * 返回值带结构化 error，便于客户端区分"没找到"和"执行失败"。
  */
 object Engine {
 
+    private const val SCROLL_BUDGET_MS = 12_000L
+
     // ---------- 查询 ----------
 
-    fun find(selector: Selector, timeoutMs: Long = 0L): AccessibilityNodeInfo? {
+    fun find(selector: Selector, timeoutMs: Long = 0L, opId: String? = null): AccessibilityNodeInfo? {
         if (selector.isEmpty()) return null
         val idx = selector.index ?: 0
-        return findAll(selector, timeoutMs, idx + 1).getOrNull(idx)
+        return findAll(selector, timeoutMs, idx + 1, opId).getOrNull(idx)
     }
 
     /** 收集所有匹配节点（DFS 顺序，超过 limit 即停） */
-    fun findAll(selector: Selector, timeoutMs: Long = 0L, limit: Int = 500): List<AccessibilityNodeInfo> {
+    fun findAll(
+        selector: Selector,
+        timeoutMs: Long = 0L,
+        limit: Int = 500,
+        opId: String? = null
+    ): List<AccessibilityNodeInfo> {
         if (selector.isEmpty()) return emptyList()
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
+            if (OpRegistry.isCancelled(opId)) return emptyList()
+
             val svc = AutoAccessibilityService.instance
             if (svc != null) {
                 val root = try {
@@ -49,11 +69,7 @@ object Engine {
                 }
             }
             if (System.currentTimeMillis() >= deadline) return emptyList()
-            try {
-                Thread.sleep(120)
-            } catch (e: InterruptedException) {
-                return emptyList()
-            }
+            sleepQuietly(120)
         }
     }
 
@@ -77,90 +93,6 @@ object Engine {
         }
     }
 
-    /** 等待元素出现或消失 */
-    fun waitFor(selector: Selector, wantPresent: Boolean, timeoutMs: Long): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (true) {
-            val hit = find(selector, 0) != null
-            if (hit == wantPresent) return true
-            if (System.currentTimeMillis() >= deadline) return false
-            try {
-                Thread.sleep(150)
-            } catch (e: InterruptedException) {
-                return false
-            }
-        }
-    }
-
-    /**
-     * 等界面静止：连续两次 dump 的节点树签名一致，且保持 quietMs。
-     * 这是消除"dump 到半截树"这类假失败的关键。
-     */
-    fun waitStable(timeoutMs: Long = 5000L, quietMs: Long = 300L): Boolean {
-        val started = System.currentTimeMillis()
-        val deadline = started + timeoutMs
-        var lastSig = ""
-        var lastChange = started
-
-        while (System.currentTimeMillis() < deadline) {
-            val dump = NodeDump.dump()
-            val rootJson = dump.optJSONObject("root")
-            if (rootJson == null) {
-                try {
-                    Thread.sleep(100)
-                } catch (e: InterruptedException) {
-                    return false
-                }
-                continue
-            }
-            val sig = rootJson.toString()
-            val now = System.currentTimeMillis()
-            if (sig != lastSig) {
-                lastSig = sig
-                lastChange = now
-            } else if (now - lastChange >= quietMs) {
-                return true
-            }
-            try {
-                Thread.sleep(120)
-            } catch (e: InterruptedException) {
-                return false
-            }
-        }
-        return false
-    }
-
-    /** 滚动查找：找不到就按方向滑，最多 maxSwipes 次 */
-    fun scrollIntoView(
-        selector: Selector,
-        down: Boolean = true,
-        maxSwipes: Int = 8,
-        timeoutMs: Long = 2000L
-    ): AccessibilityNodeInfo? {
-        find(selector, 0)?.let { return it }
-
-        val dm = AutoAccessibilityService.instance?.resources?.displayMetrics
-        val w = dm?.widthPixels ?: 1080
-        val h = dm?.heightPixels ?: 1920
-        val cx = w / 2
-        val fromY = (h * if (down) 0.75 else 0.25).toInt()
-        val toY = (h * if (down) 0.30 else 0.70).toInt()
-
-        val startedAt = System.currentTimeMillis()
-        repeat(maxSwipes) {
-            if (System.currentTimeMillis() - startedAt > 12_000L) return@repeat
-            if (!swipe(cx, fromY, cx, toY, 350L)) return@repeat
-            try {
-                Thread.sleep(400)
-            } catch (e: InterruptedException) {
-                return null
-            }
-            val hit = find(selector, timeoutMs)
-            if (hit != null) return hit
-        }
-        return null
-    }
-
     fun summary(node: AccessibilityNodeInfo): JSONObject {
         val r = Rect()
         node.getBoundsInScreen(r)
@@ -177,41 +109,83 @@ object Engine {
 
     // ---------- 动作 ----------
 
-    fun click(selector: Selector?, x: Int?, y: Int?, timeoutMs: Long = 3000L): Boolean {
+    fun click(
+        selector: Selector?,
+        x: Int?,
+        y: Int?,
+        timeoutMs: Long = 3000L,
+        opId: String? = null
+    ): OpResult {
+        val started = System.currentTimeMillis()
+        if (OpRegistry.isCancelled(opId)) return OpResult.fail("CANCELLED")
+
         if (selector != null && !selector.isEmpty()) {
-            val node = find(selector, timeoutMs) ?: return false
+            val node = find(selector, timeoutMs, opId)
+                ?: return OpResult.fail(
+                    if (OpRegistry.isCancelled(opId)) "CANCELLED" else "NOT_FOUND",
+                    System.currentTimeMillis() - started
+                )
+
             val target = clickableAncestor(node)
             if (target != null) {
                 try {
-                    if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                    if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        return OpResult.ok(System.currentTimeMillis() - started)
+                    }
                 } catch (t: Throwable) {
-                    // fall through to gesture
+                    // 落到坐标点击
                 }
             }
             val r = Rect()
             node.getBoundsInScreen(r)
             if (r.width() > 0 && r.height() > 0) {
-                return tap(r.centerX().toFloat(), r.centerY().toFloat())
+                val ok = tap(r.centerX().toFloat(), r.centerY().toFloat())
+                return if (ok) OpResult.ok(System.currentTimeMillis() - started)
+                else OpResult.fail("ACTION_FAILED", System.currentTimeMillis() - started)
             }
-            return false
+            return OpResult.fail("ACTION_FAILED", System.currentTimeMillis() - started)
         }
-        if (x != null && y != null) return tap(x.toFloat(), y.toFloat())
-        return false
+
+        if (x != null && y != null) {
+            val ok = tap(x.toFloat(), y.toFloat())
+            return if (ok) OpResult.ok(System.currentTimeMillis() - started)
+            else OpResult.fail("ACTION_FAILED", System.currentTimeMillis() - started)
+        }
+        return OpResult.fail("BAD_ARGS")
     }
 
-    fun longClick(selector: Selector, timeoutMs: Long = 3000L): Boolean {
-        val node = find(selector, timeoutMs) ?: return false
+    fun longClick(selector: Selector, timeoutMs: Long = 3000L, opId: String? = null): OpResult {
+        val started = System.currentTimeMillis()
+        if (OpRegistry.isCancelled(opId)) return OpResult.fail("CANCELLED")
+        val node = find(selector, timeoutMs, opId)
+            ?: return OpResult.fail(
+                if (OpRegistry.isCancelled(opId)) "CANCELLED" else "NOT_FOUND",
+                System.currentTimeMillis() - started
+            )
         val target = clickableAncestor(node) ?: node
-        return try {
+        val ok = try {
             target.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
         } catch (t: Throwable) {
             false
         }
+        return if (ok) OpResult.ok(System.currentTimeMillis() - started)
+        else OpResult.fail("ACTION_FAILED", System.currentTimeMillis() - started)
     }
 
-    fun setText(selector: Selector, text: String, timeoutMs: Long = 3000L): Boolean {
-        val node = find(selector, timeoutMs) ?: return false
-        return try {
+    fun setText(
+        selector: Selector,
+        text: String,
+        timeoutMs: Long = 3000L,
+        opId: String? = null
+    ): OpResult {
+        val started = System.currentTimeMillis()
+        if (OpRegistry.isCancelled(opId)) return OpResult.fail("CANCELLED")
+        val node = find(selector, timeoutMs, opId)
+            ?: return OpResult.fail(
+                if (OpRegistry.isCancelled(opId)) "CANCELLED" else "NOT_FOUND",
+                System.currentTimeMillis() - started
+            )
+        val ok = try {
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             val args = Bundle()
             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
@@ -219,6 +193,8 @@ object Engine {
         } catch (t: Throwable) {
             false
         }
+        return if (ok) OpResult.ok(System.currentTimeMillis() - started)
+        else OpResult.fail("ACTION_FAILED", System.currentTimeMillis() - started)
     }
 
     fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long = 300L): Boolean {
@@ -338,7 +314,111 @@ object Engine {
         }
     }
 
+    // ---------- 等待 ----------
+
+    fun waitFor(
+        selector: Selector,
+        wantPresent: Boolean,
+        timeoutMs: Long,
+        opId: String? = null
+    ): OpResult {
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutMs
+        var last = if (wantPresent) "NOT_FOUND" else "STILL_PRESENT"
+
+        while (true) {
+            if (OpRegistry.isCancelled(opId)) return OpResult.fail("CANCELLED", System.currentTimeMillis() - started)
+
+            val present = find(selector, 0, opId) != null
+            if (present == wantPresent) return OpResult.ok(System.currentTimeMillis() - started)
+            last = if (wantPresent) "NOT_FOUND" else "STILL_PRESENT"
+
+            if (System.currentTimeMillis() >= deadline) {
+                return OpResult.fail("TIMEOUT", System.currentTimeMillis() - started)
+            }
+            sleepQuietly(150)
+        }
+    }
+
+    /** 等界面静止：连续两次 dump 一致且保持 quietMs */
+    fun waitStable(timeoutMs: Long = 5000L, quietMs: Long = 300L, opId: String? = null): OpResult {
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutMs
+        var lastSig = ""
+        var lastChange = started
+
+        while (System.currentTimeMillis() < deadline) {
+            if (OpRegistry.isCancelled(opId)) return OpResult.fail("CANCELLED", System.currentTimeMillis() - started)
+
+            val dump = NodeDump.dump()
+            val rootJson = dump.optJSONObject("root")
+            if (rootJson == null) {
+                sleepQuietly(100)
+                continue
+            }
+            val sig = rootJson.toString()
+            val now = System.currentTimeMillis()
+            if (sig != lastSig) {
+                lastSig = sig
+                lastChange = now
+            } else if (now - lastChange >= quietMs) {
+                return OpResult.ok(now - started)
+            }
+            sleepQuietly(120)
+        }
+        return OpResult.fail("TIMEOUT", System.currentTimeMillis() - started)
+    }
+
+    /** 滚动查找：找不到就按方向滑，最多 maxSwipes 次，总预算 12 秒 */
+    fun scrollIntoView(
+        selector: Selector,
+        down: Boolean = true,
+        maxSwipes: Int = 8,
+        timeoutMs: Long = 2000L,
+        opId: String? = null
+    ): ScrollResult {
+        val started = System.currentTimeMillis()
+
+        find(selector, 0, opId)?.let { return ScrollResult(it, 0, 0, null) }
+
+        val dm = AutoAccessibilityService.instance?.resources?.displayMetrics
+        val w = dm?.widthPixels ?: 1080
+        val h = dm?.heightPixels ?: 1920
+        val cx = w / 2
+        val fromY = (h * if (down) 0.75 else 0.25).toInt()
+        val toY = (h * if (down) 0.30 else 0.70).toInt()
+
+        var swipes = 0
+        while (swipes < maxSwipes) {
+            if (OpRegistry.isCancelled(opId)) {
+                return ScrollResult(null, swipes, System.currentTimeMillis() - started, "CANCELLED")
+            }
+            if (System.currentTimeMillis() - started > SCROLL_BUDGET_MS) {
+                return ScrollResult(null, swipes, System.currentTimeMillis() - started, "SCROLL_TIMEOUT")
+            }
+            if (!swipe(cx, fromY, cx, toY, 350L)) {
+                return ScrollResult(null, swipes, System.currentTimeMillis() - started, "ACTION_FAILED")
+            }
+            swipes++
+            sleepQuietly(400)
+
+            val hit = find(selector, timeoutMs, opId)
+            if (hit != null) {
+                return ScrollResult(hit, swipes, System.currentTimeMillis() - started, null)
+            }
+        }
+        return ScrollResult(null, swipes, System.currentTimeMillis() - started, "NOT_FOUND")
+    }
+
     // ---------- 内部 ----------
+
+    private fun sleepQuietly(ms: Long) {
+        try {
+            Thread.sleep(ms)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
 
     private fun clickableAncestor(start: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         var cur = start

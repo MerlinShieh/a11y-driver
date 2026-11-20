@@ -12,6 +12,9 @@
 手机端：设置里选「反连模式」，地址填 PC 的 IP:7913
        （Android 模拟器里 PC 的地址固定是 10.0.2.2）
 
+并发模型：一条连接上允许多个在途请求，响应按 id 分发。
+否则一条长任务（wait/scroll）会把连接占满，`/v1/cancel` 无法送达。
+
 只依赖标准库，不需要 pip install。
 """
 
@@ -47,21 +50,29 @@ ROUTES = {
     "/v1/app/current": "app.current",
     "/v1/app/start": "app.start",
     "/v1/shell": "shell",
+    "/v1/cancel": "cancel",
+    "/v1/ops": "ops",
     "/v1/screenshot": "screenshot",
 }
 
 
 class Link:
-    """一条到手机的 JSON-lines 连接。"""
+    """一条到手机的 JSON-lines 连接，支持并发在途请求。"""
 
     def __init__(self, sock: socket.socket, addr):
         self.sock = sock
         self.addr = addr
         self.buf = b""
-        self.lock = threading.Lock()
+        self.send_lock = threading.Lock()
+        self.pending: dict[str, dict] = {}
+        self.pending_lock = threading.Lock()
         self.seq = 0
+        self.seq_lock = threading.Lock()
         self.device = {}
         self.closed = False
+        self.reader: threading.Thread | None = None
+
+    # ---------- 收 ----------
 
     def _readline(self, timeout: float) -> str:
         deadline = time.time() + timeout
@@ -77,35 +88,75 @@ class Link:
         line, _, self.buf = self.buf.partition(b"\n")
         return line.decode("utf-8", "replace")
 
+    def start_reader(self) -> None:
+        self.reader = threading.Thread(target=self._read_loop, name="hub-reader", daemon=True)
+        self.reader.start()
+
+    def _read_loop(self) -> None:
+        try:
+            while not self.closed:
+                line = self._readline(600.0)
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                rid = obj.get("id")
+                with self.pending_lock:
+                    slot = self.pending.pop(rid, None)
+                if slot is not None:
+                    slot["result"] = obj
+                    slot["event"].set()
+        except Exception as e:
+            if not self.closed:
+                log.warning("读线程退出：%s", e)
+        finally:
+            self._fail_pending("连接已断开")
+            self.closed = True
+
+    def _fail_pending(self, reason: str) -> None:
+        with self.pending_lock:
+            slots = list(self.pending.values())
+            self.pending.clear()
+        for slot in slots:
+            slot["error"] = reason
+            slot["event"].set()
+
+    # ---------- 发 ----------
+
     def send(self, obj: dict) -> None:
-        self.sock.sendall((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
+        with self.send_lock:
+            self.sock.sendall((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
 
     def call(self, cmd: str, payload: dict | None = None, timeout: float = 25.0) -> dict:
-        with self.lock:
-            if self.closed:
-                raise ConnectionError("设备未连接")
+        if self.closed:
+            raise ConnectionError("设备未连接")
+
+        with self.seq_lock:
             self.seq += 1
             rid = str(self.seq)
-            try:
-                self.send({"id": rid, "cmd": cmd, "payload": payload or {}})
-                while True:
-                    line = self._readline(timeout)
-                    if not line.strip():
-                        continue
-                    obj = json.loads(line)
-                    if obj.get("id") == rid:
-                        return obj
-                    # 其它消息（hello/heartbeat）忽略
-            except Exception:
-                self.closed = True
-                try:
-                    self.sock.close()
-                except OSError:
-                    pass
-                raise
+
+        slot = {"event": threading.Event(), "result": None, "error": None}
+        with self.pending_lock:
+            self.pending[rid] = slot
+
+        try:
+            self.send({"id": rid, "cmd": cmd, "payload": payload or {}})
+        except Exception:
+            with self.pending_lock:
+                self.pending.pop(rid, None)
+            raise
+
+        if not slot["event"].wait(timeout):
+            with self.pending_lock:
+                self.pending.pop(rid, None)
+            raise TimeoutError(f"等待手机响应超时（{timeout}s）")
+
+        if slot.get("error"):
+            raise ConnectionError(slot["error"])
+        return slot["result"]
 
     def close(self) -> None:
         self.closed = True
+        self._fail_pending("连接已关闭")
         try:
             self.sock.close()
         except OSError:
@@ -128,31 +179,29 @@ def get_current() -> Link | None:
 
 
 def device_thread(conn: socket.socket, addr, token: str) -> None:
-    global _current
     link = Link(conn, addr)
     try:
-        hello_raw = link._readline(10.0)
-        hello = json.loads(hello_raw)
+        hello = json.loads(link._readline(10.0))
         if hello.get("token") != token:
-            log.info(f"[!] {addr} 令牌不匹配，已拒绝")
+            log.warning("%s 令牌不匹配，已拒绝", addr)
             link.send({"ok": False, "error": "UNAUTHORIZED"})
             link.close()
             return
+
         link.device = hello.get("device", {})
         model = link.device.get("model", "unknown")
-        log.info(f"[+] 设备已连接：{model} ({addr[0]}:{addr[1]})")
+        log.info("设备已连接：%s (%s:%s)", model, addr[0], addr[1])
+
         set_current(link)
-        # 阻塞等待连接结束（call() 会消费数据，这里只等 EOF 不可行，
-        # 因此用 readline 的空闲超时循环探测存活）
-        while not link.closed:
-            time.sleep(1.0)
+        link.start_reader()
+        link.reader.join()
     except Exception as e:
-        log.info(f"[!] 设备连接异常：{e}")
+        log.warning("设备连接异常：%s", e)
     finally:
         link.close()
         if get_current() is link:
             set_current(None)
-        log.info(f"[-] 设备已断开：{addr[0]}:{addr[1]}")
+        log.info("设备已断开：%s:%s", addr[0], addr[1])
 
 
 def start_device_server(bind: str, port: int, token: str) -> None:
@@ -160,7 +209,7 @@ def start_device_server(bind: str, port: int, token: str) -> None:
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((bind, port))
     srv.listen(8)
-    log.info(f"[*] 等待手机反连：{bind}:{port}")
+    log.info("等待手机反连：%s:%s", bind, port)
     while True:
         conn, addr = srv.accept()
         threading.Thread(target=device_thread, args=(conn, addr, token), daemon=True).start()
@@ -170,8 +219,8 @@ def make_handler(token: str):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, fmt, *args):  # 静默访问日志
-            pass
+        def log_message(self, fmt, *args):  # 访问日志交给 logging
+            log.debug("HTTP %s", fmt % args)
 
         def _reply(self, code: int, body: bytes, content_type: str) -> None:
             self.send_response(code)
@@ -212,7 +261,9 @@ def make_handler(token: str):
                 return
 
             try:
-                result = link.call(cmd, payload)
+                # 长任务给更宽的等待窗口
+                timeout = 60.0 if cmd in ("wait", "waitstable", "scroll", "shell") else 25.0
+                result = link.call(cmd, payload, timeout=timeout)
             except Exception as e:
                 self._json(503, {"ok": False, "error": f"DEVICE_ERROR: {e}"})
                 return
@@ -231,9 +282,6 @@ def make_handler(token: str):
 
         def do_POST(self):
             self._handle("POST")
-
-        def do_DELETE(self):
-            self._json(405, {"ok": False, "error": "METHOD_NOT_ALLOWED"})
 
     return Handler
 
@@ -255,12 +303,12 @@ def main() -> None:
     ).start()
 
     httpd = ThreadingHTTPServer(("127.0.0.1", args.http_port), make_handler(args.token))
-    log.info(f"[*] HTTP 接口已就绪：http://127.0.0.1:{args.http_port}")
-    log.info(f"[*] 令牌：{args.token}")
+    log.info("HTTP 接口已就绪：http://127.0.0.1:%s", args.http_port)
+    log.info("令牌：%s", args.token[:4] + "****" if args.token else "(空)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        log.info("\n[*] 退出")
+        log.info("退出")
         httpd.shutdown()
 
 

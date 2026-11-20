@@ -56,6 +56,8 @@ class ApiServer(port: Int, private val token: String) : NanoHTTPD(port) {
             "/v1/app/start" -> "app.start"
             "/v1/capabilities" -> "capabilities"
             "/v1/shell" -> "shell"
+            "/v1/cancel" -> "cancel"
+            "/v1/ops" -> "ops"
             else -> null
         }
 

@@ -60,6 +60,45 @@ class EngineClientTest(unittest.TestCase):
         c = EngineClient("127.0.0.1", 7920, "t")
         self.assertEqual(c.base, "http://127.0.0.1:7920")
 
+    # ---------- REQ-011：重试与取消 ----------
+
+    def test_click_retries_payload(self):
+        c = FakeClient()
+        c.click({"text": "确定"}, retries=2, retry_interval=0.5, op_id="op-1")
+        payload = c.calls[-1][2]
+        self.assertEqual(payload["retries"], 2)
+        self.assertEqual(payload["retryIntervalMs"], 500)
+        self.assertEqual(payload["opId"], "op-1")
+
+    def test_click_without_retries_keeps_payload_minimal(self):
+        c = FakeClient()
+        c.click({"text": "确定"})
+        payload = c.calls[-1][2]
+        self.assertNotIn("retries", payload)
+        self.assertNotIn("opId", payload)
+
+    def test_cancel_single(self):
+        c = FakeClient()
+        c.reply = {"ok": True, "cancelled": 1}
+        self.assertEqual(c.cancel("op-9"), 1)
+        path, _, payload = c.calls[-1]
+        self.assertEqual(path, "/v1/cancel")
+        self.assertEqual(payload["opId"], "op-9")
+        self.assertNotIn("all", payload)
+
+    def test_cancel_all(self):
+        c = FakeClient()
+        c.reply = {"ok": True, "cancelled": 3}
+        self.assertEqual(c.cancel(all_ops=True), 3)
+        self.assertTrue(c.calls[-1][2]["all"])
+
+    def test_click_detail_returns_error_code(self):
+        c = FakeClient()
+        c.reply = {"ok": False, "error": "NOT_FOUND", "attempts": 3, "elapsedMs": 900}
+        r = c.click_detail({"text": "无"}, retries=2)
+        self.assertEqual(r["error"], "NOT_FOUND")
+        self.assertEqual(r["attempts"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
