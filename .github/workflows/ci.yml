@@ -42,17 +42,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      # runner 自带 Android SDK，直接用 sdkmanager 补装所需组件，
+      # 不依赖第三方 setup-android（曾在 Node 24 下失败）
+      - name: 准备 Android SDK
+        working-directory: .
+        run: |
+          set -e
+          SDKM="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then SDKM="$(command -v sdkmanager)"; fi
+          echo "sdkmanager = $SDKM"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "已安装："
+          ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/platforms"
 
-      - name: 安装 SDK 组件
-        run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
-
-      - uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v4
 
       - name: 单元测试
         run: ./gradlew testDebugUnitTest --console=plain
