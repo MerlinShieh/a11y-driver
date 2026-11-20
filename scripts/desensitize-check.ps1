@@ -24,6 +24,8 @@ $allowList = @(
 
 $rules = @(
     @{ Name = '疑似真实令牌（16 位十六进制）'; Level = 'BLOCK'; Regex = '\b[0-9a-f]{16}\b'; Hint = '换成 <token> 占位符' },
+    @{ Name = 'GitHub 令牌';                   Level = 'BLOCK'; Regex = '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'; Hint = '立即吊销并删除' },
+    @{ Name = '疑似私钥';                       Level = 'BLOCK'; Regex = 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; Hint = '严禁入库' },
     @{ Name = '个人目录 C:\Users\*';           Level = 'BLOCK'; Regex = 'C:\\Users\\[A-Za-z0-9._-]+'; Hint = '改成相对路径或环境变量' },
     @{ Name = '开发机绝对路径';                 Level = 'BLOCK'; Regex = '[A-Za-z]:\\[^\s"'']*vibeCoding'; Hint = '改成相对路径' },
     @{ Name = '真实邮箱';                       Level = 'WARN';  Regex = '[A-Za-z0-9._%+-]+@(?!users\.noreply)[A-Za-z0-9.-]+\.[A-Za-z]{2,}'; Hint = '用 noreply 或占位符' },
