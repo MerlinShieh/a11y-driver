@@ -11,6 +11,14 @@ engine/.gradle/
 !gradle/wrapper/gradle-wrapper.jar
 *.log
 
+# 凭据（严禁提交）
+__github.token
+*.token
+.env
+.env.*
+credentials*
+*_credentials.json
+
 # 本地配置（含本机绝对路径）
 engine/local.properties
 env-backup.txt
