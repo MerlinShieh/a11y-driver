@@ -239,7 +239,7 @@ def make_handler(token: str):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="MobileAppAuto 反连 hub")
+    ap = argparse.ArgumentParser(description="A11y Driver 反连 hub")
     ap.add_argument("--token", required=True, help="手机界面上显示的令牌")
     ap.add_argument("--http-port", type=int, default=7912, help="PC 本地 HTTP 端口")
     ap.add_argument("--device-port", type=int, default=7913, help="等手机连进来的端口")

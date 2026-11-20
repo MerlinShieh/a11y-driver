@@ -8,7 +8,7 @@ engine/.gradle/
 *.aar
 *.class
 *.jar
-!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
 *.log
 
 # 凭据（严禁提交）

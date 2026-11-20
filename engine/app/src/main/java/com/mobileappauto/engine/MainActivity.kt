@@ -51,7 +51,7 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "MobileAppAuto 执行引擎"
+            text = "A11y Driver 执行引擎"
             textSize = 22f
             setTypeface(null, Typeface.BOLD)
         })

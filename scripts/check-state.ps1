@@ -1,4 +1,4 @@
-﻿# 一条命令看清「引擎为什么没跑起来」
+# 一条命令看清「引擎为什么没跑起来」
 # 用法: powershell -File scripts/check-state.ps1 [-Token <令牌>]
 param(
     [string]$Token = "",
@@ -42,7 +42,7 @@ $bound = (& $adb -s $Serial shell dumpsys accessibility 2>&1 | Select-String 'Bo
 Line "总开关 accessibility_enabled" $master $(if ($master -eq '1') { 'ok' } else { 'bad' })
 $hasListed = $listed -like "*$svc*"
 Line "组件在启用列表里" $(if ($hasListed) { '是（设置页会显示"已开启"）' } else { '否' }) $(if ($hasListed) { 'warn' } else { 'bad' })
-$isBound = "$bound" -like "*MobileAppAuto*"
+$isBound = "$bound" -like "*A11y Driver*"
 Line "系统真的绑定了服务" $(if ($isBound) { '是' } else { '否' }) $(if ($isBound) { 'ok' } else { 'bad' })
 
 Write-Host "`n=== 引擎 ===" -ForegroundColor Cyan
@@ -84,7 +84,7 @@ Write-Host "`n=== 结论 ===" -ForegroundColor Cyan
 if (-not $isBound) {
     if ($master -ne '1') {
         Write-Host "总开关是关的（这台 ROM 重启后会自动关）。" -ForegroundColor Yellow
-        Write-Host "恢复: 设置 → 无障碍 → 点「MobileAppAuto 执行引擎」→ 系统弹窗「允许」"
+        Write-Host "恢复: 设置 → 无障碍 → 点「A11y Driver 执行引擎」→ 系统弹窗「允许」"
     } elseif ($hasListed) {
         Write-Host "组件在列表里但没绑定（厂商门禁/状态失效）。" -ForegroundColor Yellow
         Write-Host "恢复: 设置 → 无障碍 → 进入该服务 → 关掉再打开 → 弹窗「允许」"

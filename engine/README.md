@@ -1,4 +1,4 @@
-# MobileAppAuto Engine
+# A11y Driver
 
 手机端「无障碍执行引擎」：把 uiautomator2 的那套能力（dump / find / click / swipe / input / screenshot）
 从 ADB 通道搬到 **AccessibilityService** 上，由手机自己对外提供执行接口。
@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 adb install -r engine/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-1. 打开 App → **① 开启无障碍服务** → 找到「MobileAppAuto 执行引擎」→ 开启
+1. 打开 App → **① 开启无障碍服务** → 找到「A11y Driver 执行引擎」→ 开启
    - 开关置灰 / 提示「受限制的设置」：先去「应用信息 → ⋮ → 允许受限制的设置」
 2. 选网络模式（见第 4 节）→ **② 启动执行引擎**
 3. 建议加入电池优化白名单

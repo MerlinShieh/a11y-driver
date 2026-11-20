@@ -1,4 +1,7 @@
-# MobileAppAuto
+# A11y Driver
+
+[![CI](https://github.com/MerlinShieh/a11y-driver/actions/workflows/ci.yml/badge.svg)](https://github.com/MerlinShieh/a11y-driver/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 用 **Android 无障碍服务** 实现手机端自动化执行引擎：不做 AI Agent，而是提供一套类似 uiautomator2 的
 **确定性命令接口**，让脚本 / CI 能驱动真机做自动化测试与重复操作——**不依赖 ADB 也能跑**。

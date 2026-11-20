@@ -206,7 +206,7 @@ class EngineService : Service() {
     private fun createChannel() {
         val nm = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(CHANNEL_ID, "执行引擎", NotificationManager.IMPORTANCE_LOW)
-        channel.description = "MobileAppAuto 执行引擎运行状态"
+        channel.description = "A11y Driver 执行引擎运行状态"
         nm.createNotificationChannel(channel)
     }
 

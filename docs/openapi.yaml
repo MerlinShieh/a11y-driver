@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: MobileAppAuto 执行引擎接口
+  title: A11y Driver 执行引擎接口
   version: v1.0
   description: |
     手机端无障碍执行引擎 + PC 侧编排器。人读版本见 `docs/接口文档.md`。

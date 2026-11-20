@@ -8,6 +8,12 @@
 - 工程规范体系：需求追踪、接口契约、脱敏检查、兼容性矩阵
 - 统一日志入口 `Logx`（Android）与 `logging_setup`（PC）
 - 单元测试基础设施
+- GitHub Actions CI：Python 单测、脱敏检查、Android 构建与单测
+- Gradle Wrapper（CI 与本地构建一致）
+- 脱敏检查 Python 实现，跨平台可进 CI
+
+### 变更
+- 项目更名为 **A11y Driver**，仓库迁移至 `MerlinShieh/a11y-driver`（应用包名 `com.mobileappauto.engine` 暂未改动）
 
 ## [0.2.0] - 2026-11-19
 

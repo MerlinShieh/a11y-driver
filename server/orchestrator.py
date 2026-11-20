@@ -247,7 +247,7 @@ def make_handler():
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="MobileAppAuto PC 侧编排器")
+    ap = argparse.ArgumentParser(description="A11y Driver PC 侧编排器")
     ap.add_argument("--token", required=True)
     ap.add_argument("--port", type=int, default=7920)
     ap.add_argument("--ui-port", type=int, default=7912)
