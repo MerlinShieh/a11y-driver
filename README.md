@@ -25,6 +25,16 @@ docs/       规范、需求、接口文档、兼容性、踩坑记录
 scripts/    构建、状态检查、脱敏检查
 ```
 
+## 下载
+
+| 版本 | 说明 | 下载 |
+|---|---|---|
+| v0.3.0 | 最新稳定版（M1~M4 全部能力） | [Releases](https://github.com/MerlinShieh/a11y-driver/releases/latest) |
+
+- 包名 `com.mobileappauto.engine`，minSdk 30（Android 11），targetSdk 34
+- 使用独立密钥签名；SHA-256 见 Release 页面
+- 首次安装需手动开启无障碍，注意 Android 13+ 的「受限设置」
+
 ## 快速开始
 
 ```bash

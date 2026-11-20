@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 计划
+- M5：多机管理与 MCP 接口
+
+## [0.3.0] - 2026-11-20
+
+### 发布物
+- `app-release.apk`（v0.3.0，versionCode 3，minSdk 30，独立密钥签名）
+- SHA-256：`369d606bff7ba2c8304754095a2fcee324b56dbaa11caec79788ca77a19423c0`
+
+
 ### 新增
 - 工程规范体系：需求追踪、接口契约、脱敏检查、兼容性矩阵
 - 统一日志入口 `Logx`（Android）与 `logging_setup`（PC）
