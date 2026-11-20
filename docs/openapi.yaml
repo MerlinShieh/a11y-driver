@@ -261,6 +261,76 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/BoolResult'}
 
+  /v1/gesture:
+    post:
+      summary: 多指/多段手势（同 startDelayMs 的 stroke 同时按下）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [strokes]
+              properties:
+                strokes:
+                  type: array
+                  items:
+                    type: object
+                    required: [points]
+                    properties:
+                      points:
+                        type: array
+                        items:
+                          type: array
+                          items: {type: integer}
+                      startDelayMs: {type: integer, default: 0}
+                      durationMs: {type: integer, default: 300}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  strokes: {type: integer}
+                  elapsedMs: {type: integer}
+                  error: {type: string}
+
+  /v1/drag:
+    post:
+      summary: 按住并拖拽
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: {type: array, items: {type: integer}, minItems: 2, maxItems: 2}
+                to: {type: array, items: {type: integer}, minItems: 2, maxItems: 2}
+                holdMs: {type: integer, default: 500}
+                durationMs: {type: integer, default: 400}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/pinch:
+    post:
+      summary: 双指缩放
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [center]
+              properties:
+                center: {type: array, items: {type: integer}, minItems: 2, maxItems: 2}
+                fromRadius: {type: integer, default: 200}
+                toRadius: {type: integer, default: 600}
+                durationMs: {type: integer, default: 400}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
   /v1/input:
     post:
       summary: 文本输入

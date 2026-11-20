@@ -37,7 +37,7 @@ ADB = os.environ.get("ADB") or shutil.which("adb") or "adb"
 UI_ROUTES = {
     "/v1/ping", "/v1/capabilities", "/v1/hierarchy", "/v1/find", "/v1/findall",
     "/v1/wait", "/v1/waitstable", "/v1/scroll", "/v1/click", "/v1/longclick",
-    "/v1/swipe", "/v1/input", "/v1/global", "/v1/app/current", "/v1/app/start",
+    "/v1/swipe", "/v1/gesture", "/v1/drag", "/v1/pinch", "/v1/input", "/v1/global", "/v1/app/current", "/v1/app/start",
     "/v1/shell", "/v1/cancel", "/v1/ops", "/v1/screenshot",
 }
 

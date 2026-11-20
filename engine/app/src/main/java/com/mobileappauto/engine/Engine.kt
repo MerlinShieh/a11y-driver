@@ -26,6 +26,16 @@ data class ScrollResult(
 )
 
 /**
+ * 一条手势轨迹。
+ * `startDelayMs` 相同的多条 stroke 会同时按下，可用于双指缩放、多指手势。
+ */
+data class Stroke(
+    val points: List<Pair<Int, Int>>,
+    val startDelayMs: Long = 0L,
+    val durationMs: Long = 300L
+)
+
+/**
  * 动作层：所有对手机的操作都在这里，统一走无障碍服务。
  *
  * 每个可能耗时的操作都接受 `opId`，用于 `/v1/cancel` 中断；
@@ -208,6 +218,117 @@ object Engine {
         return dispatch(svc, gesture)
     }
 
+    /**
+     * 多指 / 多段手势。
+     *
+     * 模型借鉴 AutoJs6 的 gestures()：每条 stroke 有独立的开始延迟与时长，
+     * 相同 startDelay 的 stroke 会同时按下 → 多指手势。
+     */
+    fun gesture(strokes: List<Stroke>, opId: String? = null): OpResult {
+        val started = System.currentTimeMillis()
+        if (OpRegistry.isCancelled(opId)) return OpResult.fail("CANCELLED")
+        if (strokes.isEmpty()) return OpResult.fail("BAD_ARGS")
+
+        val svc = AutoAccessibilityService.instance ?: return OpResult.fail("ACTION_FAILED")
+        val builder = GestureDescription.Builder()
+        for (s in strokes) {
+            if (s.points.size < 1) return OpResult.fail("BAD_ARGS")
+            val path = Path().apply {
+                moveTo(s.points[0].first.toFloat(), s.points[0].second.toFloat())
+                for (i in 1 until s.points.size) {
+                    lineTo(s.points[i].first.toFloat(), s.points[i].second.toFloat())
+                }
+            }
+            builder.addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    s.startDelayMs.coerceIn(0L, 10_000L),
+                    s.durationMs.coerceIn(1L, 10_000L)
+                )
+            )
+        }
+        val ok = dispatch(svc, builder.build())
+        return if (ok) OpResult.ok(System.currentTimeMillis() - started)
+        else OpResult.fail("ACTION_FAILED", System.currentTimeMillis() - started)
+    }
+
+    /**
+     * 拖拽：先按住 holdMs，再移动到目标。
+     *
+     * 用 StrokeDescription 的 continuation 实现——单条 stroke 无法表达"停住再走"，
+     * 这一点比 uiautomator2 的 drag() 更贴近真实手势。
+     */
+    fun drag(
+        fromX: Int,
+        fromY: Int,
+        toX: Int,
+        toY: Int,
+        holdMs: Long = 500L,
+        durationMs: Long = 400L
+    ): Boolean {
+        val svc = AutoAccessibilityService.instance ?: return false
+        val hold = holdMs.coerceIn(50L, 5000L)
+        val move = durationMs.coerceIn(50L, 5000L)
+
+        // 首选：按住 → continuation 继续移动（最接近真实拖拽）
+        val viaContinuation = try {
+            // 零长度路径无法驱动手势，按住阶段给 1px 位移
+            val holdPath = Path().apply {
+                moveTo(fromX.toFloat(), fromY.toFloat())
+                lineTo(fromX + 1f, fromY.toFloat())
+            }
+            val first = GestureDescription.StrokeDescription(holdPath, 0L, hold, true)
+            val movePath = Path().apply {
+                moveTo(fromX + 1f, fromY.toFloat())
+                lineTo(toX.toFloat(), toY.toFloat())
+            }
+            val second = first.continueStroke(movePath, 0L, move, false)
+            dispatch(svc, GestureDescription.Builder().addStroke(second).build())
+        } catch (t: Throwable) {
+            Logx.w("Gesture", "continuation 失败：${t.javaClass.simpleName} ${t.message}")
+            false
+        }
+        if (viaContinuation) return true
+
+        // 兜底：单条 stroke 走完全程（按住语义弱化，但保证能用）
+        Logx.i("Gesture", "continuation 不可用，改用单段拖拽")
+        val path = Path().apply {
+            moveTo(fromX.toFloat(), fromY.toFloat())
+            lineTo(toX.toFloat(), toY.toFloat())
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0L, (hold + move).coerceAtMost(9000L))
+        return dispatch(svc, GestureDescription.Builder().addStroke(stroke).build())
+    }
+
+    /** 双指缩放：两指从 fromRadius 移动到 toRadius */
+    fun pinch(
+        centerX: Int,
+        centerY: Int,
+        fromRadius: Int,
+        toRadius: Int,
+        durationMs: Long = 400L
+    ): Boolean {
+        val svc = AutoAccessibilityService.instance ?: return false
+        return try {
+            val left = Path().apply {
+                moveTo((centerX - fromRadius).toFloat(), centerY.toFloat())
+                lineTo((centerX - toRadius).toFloat(), centerY.toFloat())
+            }
+            val right = Path().apply {
+                moveTo((centerX + fromRadius).toFloat(), centerY.toFloat())
+                lineTo((centerX + toRadius).toFloat(), centerY.toFloat())
+            }
+            val d = durationMs.coerceIn(50L, 5000L)
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(left, 0L, d))
+                .addStroke(GestureDescription.StrokeDescription(right, 0L, d))
+                .build()
+            dispatch(svc, gesture)
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     fun tap(x: Float, y: Float): Boolean {
         val svc = AutoAccessibilityService.instance ?: return false
         val path = Path().apply { moveTo(x, y) }
@@ -276,25 +397,55 @@ object Engine {
     // ---------- 截图 ----------
 
     fun screenshotPng(): ByteArray? {
+        val bmp = screenshotBitmap() ?: return null
+        return try {
+            val bos = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
+            bos.toByteArray()
+        } catch (t: Throwable) {
+            null
+        } finally {
+            bmp.recycle()
+        }
+    }
+
+    /**
+     * 整屏截图（ARGB_8888，可直接裁剪）。
+     *
+     * 系统对 takeScreenshot 有频率限制，连续调用会失败，这里做几次退避重试。
+     */
+    fun screenshotBitmap(retries: Int = 2): Bitmap? {
+        var attempt = 0
+        while (attempt <= retries) {
+            val bmp = takeScreenshotOnce()
+            if (bmp != null) return bmp
+            attempt++
+            if (attempt <= retries) {
+                try {
+                    Thread.sleep(350)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return null
+                }
+            }
+        }
+        return null
+    }
+
+    private fun takeScreenshotOnce(): Bitmap? {
         val svc = AutoAccessibilityService.instance ?: return null
         val latch = CountDownLatch(1)
-        var bytes: ByteArray? = null
+        var bmp: Bitmap? = null
 
         val callback = object : AccessibilityService.TakeScreenshotCallback {
             override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                 try {
                     val buffer = result.hardwareBuffer
-                    val bmp = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
-                    val soft = bmp?.copy(Bitmap.Config.ARGB_8888, false)
+                    val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                    bmp = hardware?.copy(Bitmap.Config.ARGB_8888, false)
                     buffer.close()
-                    if (soft != null) {
-                        val bos = ByteArrayOutputStream()
-                        soft.compress(Bitmap.CompressFormat.PNG, 100, bos)
-                        bytes = bos.toByteArray()
-                        soft.recycle()
-                    }
                 } catch (t: Throwable) {
-                    bytes = null
+                    bmp = null
                 } finally {
                     latch.countDown()
                 }
@@ -308,8 +459,39 @@ object Engine {
         return try {
             svc.takeScreenshot(Display.DEFAULT_DISPLAY, svc.mainExecutor, callback)
             latch.await(6, TimeUnit.SECONDS)
-            bytes
+            bmp
         } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * 节点级截图：整屏截图后按节点 bounds 裁剪。
+     *
+     * 借鉴 assists-mp 的 node.screenshot()——测试报告里"这个控件长什么样"比整屏更有说服力。
+     */
+    fun cropBitmap(node: AccessibilityNodeInfo, padding: Int = 0): Bitmap? {
+        val full = screenshotBitmap() ?: return null
+
+        return try {
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            val left = (r.left - padding).coerceAtLeast(0)
+            val top = (r.top - padding).coerceAtLeast(0)
+            val right = (r.right + padding).coerceAtMost(full.width)
+            val bottom = (r.bottom + padding).coerceAtMost(full.height)
+            val w = right - left
+            val h = bottom - top
+            if (w <= 0 || h <= 0) {
+                full.recycle()
+                null
+            } else {
+                val cropped = Bitmap.createBitmap(full, left, top, w, h)
+                if (cropped !== full) full.recycle()
+                cropped
+            }
+        } catch (t: Throwable) {
+            full.recycle()
             null
         }
     }

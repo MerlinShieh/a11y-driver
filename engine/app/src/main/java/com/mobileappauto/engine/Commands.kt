@@ -142,6 +142,54 @@ object Commands {
                     )
                 )
 
+                "gesture" -> withOp(p) { opId ->
+                    val strokes = parseStrokes(p.optJSONArray("strokes"))
+                        ?: return@withOp JSONObject().put("ok", false).put("error", "BAD_ARGS")
+                    val r = Engine.gesture(strokes, opId)
+                    JSONObject()
+                        .put("ok", r.ok)
+                        .put("elapsedMs", r.elapsedMs)
+                        .put("strokes", strokes.size)
+                        .also { if (!r.ok) it.put("error", r.error) }
+                }
+
+                "drag" -> {
+                    val from = p.optJSONArray("from")
+                    val to = p.optJSONArray("to")
+                    if (from == null || to == null || from.length() < 2 || to.length() < 2) {
+                        JSONObject().put("ok", false).put("error", "BAD_ARGS")
+                    } else {
+                        val started = System.currentTimeMillis()
+                        val ok = Engine.drag(
+                            from.getInt(0), from.getInt(1),
+                            to.getInt(0), to.getInt(1),
+                            p.optLong("holdMs", 500L),
+                            p.optLong("durationMs", 400L)
+                        )
+                        JSONObject().put("ok", ok)
+                            .put("elapsedMs", System.currentTimeMillis() - started)
+                            .also { if (!ok) it.put("error", "ACTION_FAILED") }
+                    }
+                }
+
+                "pinch" -> {
+                    val center = p.optJSONArray("center")
+                    if (center == null || center.length() < 2) {
+                        JSONObject().put("ok", false).put("error", "BAD_ARGS")
+                    } else {
+                        val started = System.currentTimeMillis()
+                        val ok = Engine.pinch(
+                            center.getInt(0), center.getInt(1),
+                            p.optInt("fromRadius", 200),
+                            p.optInt("toRadius", 600),
+                            p.optLong("durationMs", 400L)
+                        )
+                        JSONObject().put("ok", ok)
+                            .put("elapsedMs", System.currentTimeMillis() - started)
+                            .also { if (!ok) it.put("error", "ACTION_FAILED") }
+                    }
+                }
+
                 "global" -> JSONObject().put("ok", Engine.global(p.optString("action", "")))
 
                 "app.current" -> JSONObject().put("ok", true).put("package", Engine.currentPackage())
@@ -149,14 +197,58 @@ object Commands {
                 "app.start" -> JSONObject().put("ok", Engine.appStart(p.optString("package", "")))
 
                 "screenshot" -> {
-                    val png = Engine.screenshotPng()
-                    if (png == null) {
+                    val selector = p.optJSONObject("selector")?.let { Selector.fromJson(it) }
+                    val padding = p.optInt("padding", 0)
+                    val raw = p.optString("format", "png") == "raw"
+
+                    // 先找节点，再截图——这样错误码能区分"没找到"和"截不了"
+                    var node: android.view.accessibility.AccessibilityNodeInfo? = null
+                    if (selector != null) {
+                        if (selector.isEmpty()) {
+                            return JSONObject().put("ok", false).put("error", "BAD_ARGS")
+                        }
+                        node = Engine.find(selector, p.optLong("timeoutMs", 3000L))
+                        if (node == null) {
+                            return JSONObject().put("ok", false).put("error", "NODE_NOT_FOUND")
+                        }
+                    }
+
+                    val bmp = if (node != null) {
+                        Engine.cropBitmap(node, padding)
+                    } else {
+                        Engine.screenshotBitmap()
+                    }
+
+                    if (bmp == null) {
                         JSONObject().put("ok", false).put("error", "SCREENSHOT_FAILED")
                     } else {
-                        JSONObject()
-                            .put("ok", true)
-                            .put("format", "png")
-                            .put("base64", Base64.encodeToString(png, Base64.NO_WRAP))
+                        try {
+                            val width = bmp.width
+                            val height = bmp.height
+                            if (raw) {
+                                // 原始 RGBA：PC 侧无需图像库即可做像素级对比
+                                val size = bmp.byteCount
+                                val buffer = java.nio.ByteBuffer.allocate(size)
+                                bmp.copyPixelsToBuffer(buffer)
+                                JSONObject()
+                                    .put("ok", true)
+                                    .put("format", "raw")
+                                    .put("width", width)
+                                    .put("height", height)
+                                    .put("base64", Base64.encodeToString(buffer.array(), Base64.NO_WRAP))
+                            } else {
+                                val bos = java.io.ByteArrayOutputStream()
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
+                                JSONObject()
+                                    .put("ok", true)
+                                    .put("format", "png")
+                                    .put("width", width)
+                                    .put("height", height)
+                                    .put("base64", Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP))
+                            }
+                        } finally {
+                            bmp.recycle()
+                        }
                     }
                 }
 
@@ -247,8 +339,32 @@ object Commands {
             .put("elapsedMs", totalElapsed)
     }
 
-    fun decodeScreenshot(result: JSONObject): ByteArray? {
-        if (!result.optBoolean("ok")) return null
+    /** 解析 strokes：[{"points":[[x,y],...],"startDelayMs":0,"durationMs":300}, ...] */
+    private fun parseStrokes(arr: JSONArray?): List<Stroke>? {
+        if (arr == null || arr.length() == 0) return null
+        val out = ArrayList<Stroke>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: return null
+            val pts = obj.optJSONArray("points") ?: return null
+            val points = ArrayList<Pair<Int, Int>>()
+            for (j in 0 until pts.length()) {
+                val pt = pts.optJSONArray(j) ?: return null
+                if (pt.length() < 2) return null
+                points.add(pt.getInt(0) to pt.getInt(1))
+            }
+            if (points.isEmpty()) return null
+            out.add(
+                Stroke(
+                    points,
+                    obj.optLong("startDelayMs", 0L),
+                    obj.optLong("durationMs", 300L)
+                )
+            )
+        }
+        return out
+    }
+
+    fun decodeScreenshot(result: JSONObject): ByteArray? {        if (!result.optBoolean("ok")) return null
         val b64 = result.optString("base64", "")
         if (b64.isEmpty()) return null
         return try {

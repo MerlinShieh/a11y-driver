@@ -47,6 +47,9 @@ ROUTES = {
     "/v1/click": "click",
     "/v1/longclick": "longclick",
     "/v1/swipe": "swipe",
+    "/v1/gesture": "gesture",
+    "/v1/drag": "drag",
+    "/v1/pinch": "pinch",
     "/v1/input": "input",
     "/v1/global": "global",
     "/v1/app/current": "app.current",
@@ -398,6 +401,10 @@ def make_handler(token: str):
                 return
 
             if cmd == "screenshot":
+                # raw 格式是 JSON，png 走二进制
+                if result.get("format") == "raw":
+                    self._json(200 if result.get("ok") else 500, result)
+                    return
                 if not result.get("ok") or not result.get("base64"):
                     self._json(500, result)
                     return

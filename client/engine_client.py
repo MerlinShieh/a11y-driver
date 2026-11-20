@@ -148,8 +148,31 @@ class EngineClient:
                                {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
                                 "durationMs": duration_ms}).get("ok"))
 
-    def scroll_into_view(self, selector: dict, down: bool = True,
-                         max_swipes: int = 8, timeout: float = 2.0,
+    # ---------- 手势（多指 / 拖拽 / 缩放） ----------
+
+    def gesture(self, strokes: list[dict], timeout: float = 20.0) -> dict:
+        """多指多段手势。
+
+        strokes: [{"points": [[x, y], ...], "startDelayMs": 0, "durationMs": 300}, ...]
+        startDelayMs 相同的多条 stroke 会同时按下。
+        """
+        return self._json("/v1/gesture", "POST", {"strokes": strokes}, timeout=timeout)
+
+    def drag(self, from_xy: tuple, to_xy: tuple, hold: float = 0.5,
+             duration: float = 0.4) -> bool:
+        """先按住 hold 秒，再拖到目标"""
+        return bool(self._json("/v1/drag", "POST", {
+            "from": list(from_xy), "to": list(to_xy),
+            "holdMs": int(hold * 1000), "durationMs": int(duration * 1000)}).get("ok"))
+
+    def pinch(self, center: tuple, from_radius: int = 200, to_radius: int = 600,
+              duration: float = 0.4) -> bool:
+        """双指缩放；to_radius > from_radius 为放大"""
+        return bool(self._json("/v1/pinch", "POST", {
+            "center": list(center), "fromRadius": from_radius,
+            "toRadius": to_radius, "durationMs": int(duration * 1000)}).get("ok"))
+
+    def scroll_into_view(self, selector: dict, down: bool = True,                         max_swipes: int = 8, timeout: float = 2.0,
                          op_id: str | None = None) -> dict | None:
         payload = {"selector": selector, "down": down, "maxSwipes": max_swipes,
                    "timeoutMs": int(timeout * 1000)}
@@ -196,11 +219,30 @@ class EngineClient:
     def app_start(self, package: str) -> bool:
         return bool(self._json("/v1/app/start", "POST", {"package": package}).get("ok"))
 
-    def screenshot(self, path: str) -> str:
-        data = self._request("/v1/screenshot")
+    def screenshot(self, path: str, selector: dict | None = None, padding: int = 0) -> str:
+        """截图。传 selector 则裁剪该节点；不传为整屏。"""
+        if selector:
+            data = self._request("/v1/screenshot", "POST",
+                                 {"selector": selector, "padding": padding})
+        else:
+            data = self._request("/v1/screenshot")
         with open(path, "wb") as f:
             f.write(data)
         return path
+
+    def screenshot_raw(self, selector: dict | None = None,
+                       padding: int = 0) -> tuple[int, int, bytes]:
+        """原始 RGBA 像素：返回 (宽, 高, 字节)。用于像素级对比，不依赖图像库。"""
+        import base64 as _b64
+
+        payload = {"format": "raw"}
+        if selector:
+            payload["selector"] = selector
+            payload["padding"] = padding
+        r = self._json("/v1/screenshot", "POST", payload, timeout=40)
+        if not r.get("ok"):
+            raise EngineError(f"截图失败: {r.get('error')}")
+        return int(r["width"]), int(r["height"]), _b64.b64decode(r["base64"])
 
     # ---------- shell（设备侧，需 Shizuku/root） ----------
 

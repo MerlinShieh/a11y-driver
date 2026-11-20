@@ -14,6 +14,9 @@
 - 任务取消与重试：`/v1/cancel`、`/v1/ops`、`retries` 参数
 - 事件推送：WebSocket `/v1/events`、`/v1/events/recent`，覆盖 window / notification / toast
 - 心跳：hub 每 10s 探测，30s 无响应判定离线
+- 手势：`/v1/gesture`（多指/多段）、`/v1/drag`（按住拖拽）、`/v1/pinch`（双指缩放）
+- 截图增强：节点级裁剪（selector + padding）、原始 RGBA 输出、截图失败退避重试
+- 视觉对比：`client/visual.py` 像素级 diff + 基线管理，`Case.assert_visual()`
 - 结构化错误码：`ACTION_FAILED` / `CANCELLED` / `TIMEOUT` / `SCROLL_TIMEOUT` / `BAD_ARGS`
 
 ### 修复

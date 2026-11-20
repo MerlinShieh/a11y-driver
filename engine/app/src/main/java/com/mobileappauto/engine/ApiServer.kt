@@ -28,7 +28,15 @@ class ApiServer(port: Int, private val token: String) : NanoHTTPD(port) {
 
     private fun route(session: IHTTPSession, uri: String, method: String): Response {
         if (uri == "/v1/screenshot") {
-            val result = Commands.exec("screenshot", JSONObject())
+            val payload = if (method == "POST") body(session) else JSONObject()
+            val result = Commands.exec("screenshot", payload)
+
+            // raw 格式是 JSON（含宽高与 RGBA），png 走二进制
+            if (result.optString("format") == "raw") {
+                val status = if (result.optBoolean("ok")) Response.Status.OK else Response.Status.INTERNAL_ERROR
+                return json(status, result)
+            }
+
             val png = Commands.decodeScreenshot(result)
                 ?: return json(Response.Status.INTERNAL_ERROR, result)
             return newFixedLengthResponse(
@@ -50,6 +58,9 @@ class ApiServer(port: Int, private val token: String) : NanoHTTPD(port) {
             "/v1/click" -> "click"
             "/v1/longclick" -> "longclick"
             "/v1/swipe" -> "swipe"
+            "/v1/gesture" -> "gesture"
+            "/v1/drag" -> "drag"
+            "/v1/pinch" -> "pinch"
             "/v1/input" -> "input"
             "/v1/global" -> "global"
             "/v1/app/current" -> "app.current"

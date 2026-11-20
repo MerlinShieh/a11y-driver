@@ -71,6 +71,28 @@ class Case:
                 raise AssertionFailure(f"断言失败: {name}")
         return True
 
+    def assert_visual(self, name: str, selector: dict | None = None,
+                      max_diff: float = 0.02, pixel_tolerance: int = 16,
+                      baseline_dir: str | None = None) -> float:
+        """视觉断言：与基线比对，首次运行自动创建基线。
+
+        必须在 `with case.step(...)` 内调用，失败会由 step 记录并截图。
+        """
+        from visual import compare_or_create
+
+        width, height, pixels = self.c.screenshot_raw(selector)
+        base = baseline_dir or os.path.join(os.path.dirname(self.shots_dir), "baselines")
+        same, ratio, created = compare_or_create(
+            base, name, width, height, pixels, pixel_tolerance)
+
+        if created:
+            print(f"   (基线已创建: {name} {width}x{height})")
+            return 0.0
+        if not same and ratio > max_diff:
+            raise AssertionFailure(
+                f"视觉差异 {ratio:.2%} 超过阈值 {max_diff:.2%}（{name}）")
+        return ratio
+
     # ---------- 内部 ----------
 
     def _record(self, step: Step) -> None:
