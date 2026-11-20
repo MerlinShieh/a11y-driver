@@ -177,6 +177,19 @@ class EngineClient:
     def running_ops(self) -> list[str]:
         return self._json("/v1/ops").get("running", [])
 
+    # ---------- 事件 ----------
+
+    def events_recent(self, limit: int = 50) -> list[dict]:
+        """拉取最近事件（用于补齐订阅前发生的事）"""
+        return self._json(f"/v1/events/recent?limit={limit}").get("events", [])
+
+    def event_stream(self, timeout: float = 30.0):
+        """返回一个可迭代的 WebSocket 事件流（需自行 connect 或 with 使用）"""
+        from event_stream import EventStream
+        host = self.base.replace("http://", "").split(":")[0]
+        port = int(self.base.rsplit(":", 1)[1])
+        return EventStream(host, port, self.token, timeout=timeout)
+
     def global_action(self, action: str) -> bool:
         return bool(self._json("/v1/global", "POST", {"action": action}).get("ok"))
 

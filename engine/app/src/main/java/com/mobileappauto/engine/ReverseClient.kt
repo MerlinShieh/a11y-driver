@@ -35,6 +35,9 @@ class ReverseClient(
 
     private var thread: Thread? = null
     private val workers = Executors.newFixedThreadPool(4)
+
+    /** 事件单独一个线程：无障碍回调在主线程，直接写 Socket 会抛 NetworkOnMainThreadException */
+    private val eventWorker = Executors.newSingleThreadExecutor()
     private val writeLock = Any()
 
     fun start() {
@@ -55,6 +58,7 @@ class ReverseClient(
         socket = null
         thread = null
         workers.shutdownNow()
+        eventWorker.shutdownNow()
     }
 
     private fun loop() {
@@ -84,6 +88,10 @@ class ReverseClient(
 
                 onState("已连接 $host:$port", true)
 
+                // 无障碍事件 → 上行推送
+                EventSink.attach { ev -> pushEvent(ev, writer, gen) }
+                Logx.i("Events", "事件通道已挂载")
+
                 while (running) {
                     val line = reader.readLine() ?: break
                     if (line.isBlank()) continue
@@ -92,6 +100,7 @@ class ReverseClient(
             } catch (t: Throwable) {
                 if (running) onState("断开：${t.message ?: t.toString()}", false)
             } finally {
+                EventSink.attach(null)
                 try {
                     socket?.close()
                 } catch (t: Throwable) {
@@ -117,6 +126,28 @@ class ReverseClient(
         val payload: JSONObject
         try {
             val msg = JSONObject(line)
+
+            // 非命令消息：心跳等
+            if (msg.has("type")) {
+                when (msg.optString("type")) {
+                    "ping" -> {
+                        val pong = JSONObject()
+                            .put("type", "pong")
+                            .put("ts", System.currentTimeMillis())
+                        synchronized(writeLock) {
+                            if (gen == generation && running) {
+                                try {
+                                    sendLine(writer, pong)
+                                } catch (t: Throwable) {
+                                    // 连接已断
+                                }
+                            }
+                        }
+                    }
+                }
+                return
+            }
+
             id = msg.optString("id", "")
             cmd = msg.optString("cmd", "")
             payload = msg.optJSONObject("payload") ?: JSONObject()
@@ -148,5 +179,29 @@ class ReverseClient(
         writer.write(obj.toString())
         writer.write("\n")
         writer.flush()
+    }
+
+    /** 事件上行：复用同一条连接，用 type=event 与命令响应区分 */
+    private fun pushEvent(ev: JSONObject, writer: BufferedWriter, gen: Int) {
+        if (gen != generation || !running) return
+        val msg = JSONObject().put("type", "event").put("event", ev)
+
+        // 必须在后台线程写，否则主线程网络 I/O 会抛 NetworkOnMainThreadException
+        try {
+            eventWorker.submit {
+                if (gen != generation || !running) return@submit
+                synchronized(writeLock) {
+                    if (gen == generation && running) {
+                        try {
+                            sendLine(writer, msg)
+                        } catch (t: Throwable) {
+                            Logx.w("Events", "发送失败：${t.javaClass.simpleName}")
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Logx.w("Events", "事件队列已关闭：${t.javaClass.simpleName}")
+        }
     }
 }

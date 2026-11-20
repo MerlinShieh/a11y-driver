@@ -4,31 +4,33 @@
 用法：
     python server/hub.py --token <手机界面上的令牌>
 
-    # 可选参数
-    --http-port 7912      PC 本地 HTTP 端口（脚本连这个）
+    --http-port 7912      PC 本地 HTTP 端口
     --device-port 7913    等手机连进来的 TCP 端口
-    --bind 0.0.0.0        device 监听地址（真机同局域网时用 0.0.0.0）
+    --bind 0.0.0.0        device 监听地址
 
 手机端：设置里选「反连模式」，地址填 PC 的 IP:7913
        （Android 模拟器里 PC 的地址固定是 10.0.2.2）
 
-并发模型：一条连接上允许多个在途请求，响应按 id 分发。
-否则一条长任务（wait/scroll）会把连接占满，`/v1/cancel` 无法送达。
-
-只依赖标准库，不需要 pip install。
+三条通道：
+    命令   HTTP  →  device（按 id 分发，支持并发在途）
+    事件   device →  hub → WebSocket /v1/events
+    心跳   hub   →  device，每 10s 一次，30s 无回应判定离线
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import json
+import queue
 import socket
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import ws
 from logging_setup import setup, add_level_arg
 
 log = setup("mae.hub")
@@ -55,9 +57,50 @@ ROUTES = {
     "/v1/screenshot": "screenshot",
 }
 
+HEARTBEAT_INTERVAL = 10.0
+HEARTBEAT_TIMEOUT = 30.0
+
+
+class EventHub:
+    """事件环形缓冲 + 订阅广播。"""
+
+    def __init__(self, capacity: int = 200):
+        self.buffer: collections.deque = collections.deque(maxlen=capacity)
+        self.subscribers: list[queue.Queue] = []
+        self.lock = threading.Lock()
+
+    def publish(self, event: dict, device: dict) -> None:
+        item = {"event": event, "device": device}
+        with self.lock:
+            self.buffer.append(item)
+            targets = list(self.subscribers)
+        for q in targets:
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                pass  # 订阅者太慢，丢新事件而不是阻塞采集
+
+    def recent(self, limit: int = 50) -> list[dict]:
+        with self.lock:
+            return list(self.buffer)[-limit:]
+
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=500)
+        with self.lock:
+            self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self.lock:
+            if q in self.subscribers:
+                self.subscribers.remove(q)
+
+
+EVENTS = EventHub()
+
 
 class Link:
-    """一条到手机的 JSON-lines 连接，支持并发在途请求。"""
+    """一条到手机的 JSON-lines 连接：支持并发在途请求、事件上行、心跳。"""
 
     def __init__(self, sock: socket.socket, addr):
         self.sock = sock
@@ -70,6 +113,7 @@ class Link:
         self.seq_lock = threading.Lock()
         self.device = {}
         self.closed = False
+        self.last_pong = time.time()
         self.reader: threading.Thread | None = None
 
     # ---------- 收 ----------
@@ -99,9 +143,14 @@ class Link:
                 if not line.strip():
                     continue
                 obj = json.loads(line)
-                rid = obj.get("id")
+
+                # 无 id 的是控制消息（心跳 / 事件）
+                if "id" not in obj:
+                    self._on_control(obj)
+                    continue
+
                 with self.pending_lock:
-                    slot = self.pending.pop(rid, None)
+                    slot = self.pending.pop(obj.get("id"), None)
                 if slot is not None:
                     slot["result"] = obj
                     slot["event"].set()
@@ -111,6 +160,17 @@ class Link:
         finally:
             self._fail_pending("连接已断开")
             self.closed = True
+
+    def _on_control(self, obj: dict) -> None:
+        kind = obj.get("type")
+        if kind == "pong":
+            self.last_pong = time.time()
+        elif kind == "event":
+            ev = obj.get("event", {})
+            log.debug("收到事件：%s", ev.get("type"))
+            EVENTS.publish(ev, {"model": self.device.get("model", "")})
+        else:
+            log.debug("未识别的控制消息：%s", kind)
 
     def _fail_pending(self, reason: str) -> None:
         with self.pending_lock:
@@ -154,6 +214,25 @@ class Link:
             raise ConnectionError(slot["error"])
         return slot["result"]
 
+    def start_heartbeat(self) -> None:
+        def loop() -> None:
+            while not self.closed:
+                time.sleep(HEARTBEAT_INTERVAL)
+                if self.closed:
+                    return
+                idle = time.time() - self.last_pong
+                if idle > HEARTBEAT_TIMEOUT:
+                    log.warning("心跳超时（%.0fs），断开 %s", idle, self.addr)
+                    self.close()
+                    return
+                try:
+                    self.send({"type": "ping", "ts": int(time.time() * 1000)})
+                except Exception:
+                    self.close()
+                    return
+
+        threading.Thread(target=loop, name="hub-heartbeat", daemon=True).start()
+
     def close(self) -> None:
         self.closed = True
         self._fail_pending("连接已关闭")
@@ -194,6 +273,7 @@ def device_thread(conn: socket.socket, addr, token: str) -> None:
 
         set_current(link)
         link.start_reader()
+        link.start_heartbeat()
         link.reader.join()
     except Exception as e:
         log.warning("设备连接异常：%s", e)
@@ -219,7 +299,7 @@ def make_handler(token: str):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, fmt, *args):  # 访问日志交给 logging
+        def log_message(self, fmt, *args):
             log.debug("HTTP %s", fmt % args)
 
         def _reply(self, code: int, body: bytes, content_type: str) -> None:
@@ -233,12 +313,62 @@ def make_handler(token: str):
             self._reply(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                         "application/json; charset=utf-8")
 
+        # ---------- WebSocket ----------
+
+        def _serve_events_ws(self) -> None:
+            key = self.headers.get("Sec-WebSocket-Key")
+            if not key:
+                self._json(400, {"ok": False, "error": "NOT_A_WEBSOCKET"})
+                return
+
+            self.wfile.write(ws.handshake_response(key))
+            self.wfile.flush()
+            self.close_connection = True
+
+            q = EVENTS.subscribe()
+            log.info("事件订阅者加入：%s（当前 %d）", self.client_address[0], len(EVENTS.subscribers))
+            try:
+                # 先补发最近事件，避免订阅者错过
+                for item in EVENTS.recent(20):
+                    self.wfile.write(ws.encode_frame(
+                        json.dumps(item, ensure_ascii=False).encode("utf-8")))
+                self.wfile.flush()
+
+                while True:
+                    try:
+                        item = q.get(timeout=20)
+                        self.wfile.write(ws.encode_frame(
+                            json.dumps(item, ensure_ascii=False).encode("utf-8")))
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(ws.encode_frame(b"", opcode=ws.OP_PING))
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                EVENTS.unsubscribe(q)
+                log.info("事件订阅者离开：%s", self.client_address[0])
+
+        # ---------- 路由 ----------
+
         def _handle(self, method: str) -> None:
             if self.headers.get("X-Auth-Token") != token:
                 self._json(401, {"ok": False, "error": "UNAUTHORIZED"})
                 return
 
-            path = urllib.parse.urlparse(self.path).path
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+
+            if path == "/v1/events":
+                self._serve_events_ws()
+                return
+
+            if path == "/v1/events/recent":
+                query = urllib.parse.parse_qs(parsed.query)
+                limit = int((query.get("limit") or ["50"])[0])
+                self._json(200, {"ok": True, "events": EVENTS.recent(limit)})
+                return
+
             cmd = ROUTES.get(path)
             if cmd is None:
                 self._json(404, {"ok": False, "error": "NO_ROUTE", "uri": path})
@@ -261,7 +391,6 @@ def make_handler(token: str):
                 return
 
             try:
-                # 长任务给更宽的等待窗口
                 timeout = 60.0 if cmd in ("wait", "waitstable", "scroll", "shell") else 25.0
                 result = link.call(cmd, payload, timeout=timeout)
             except Exception as e:
@@ -304,7 +433,7 @@ def main() -> None:
 
     httpd = ThreadingHTTPServer(("127.0.0.1", args.http_port), make_handler(args.token))
     log.info("HTTP 接口已就绪：http://127.0.0.1:%s", args.http_port)
-    log.info("令牌：%s", args.token[:4] + "****" if args.token else "(空)")
+    log.info("事件推送：ws://127.0.0.1:%s/v1/events", args.http_port)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

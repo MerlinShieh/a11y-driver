@@ -398,6 +398,26 @@ paths:
                     type: array
                     items: {type: string}
 
+  /v1/events/recent:
+    get:
+      summary: 最近事件（HTTP 拉取版，WebSocket 见 /v1/events）
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, default: 50}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  events:
+                    type: array
+                    items: {type: object}
+
   /v1/logcat:
     get:
       summary: 拉取设备日志（仅编排器）

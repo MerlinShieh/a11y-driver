@@ -71,6 +71,17 @@ class AutoAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 e.packageName?.let { currentPackage = it.toString() }
                 e.className?.let { currentWindowTitle = it.toString() }
+                EventSink.window(e.packageName?.toString(), e.className?.toString())
+            }
+
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
+                val pkg = e.packageName?.toString()
+                val text = e.text?.joinToString(" ")?.take(200)
+                if (e.className?.toString()?.contains("Toast") == true) {
+                    EventSink.toast(pkg, text)
+                } else {
+                    EventSink.notification(pkg, text)
+                }
             }
         }
     }
