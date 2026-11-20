@@ -1,0 +1,492 @@
+openapi: 3.0.3
+info:
+  title: MobileAppAuto 执行引擎接口
+  version: v1.0
+  description: |
+    手机端无障碍执行引擎 + PC 侧编排器。人读版本见 `docs/接口文档.md`。
+    所有接口需 `X-Auth-Token`；时间单位为毫秒；坐标单位为像素。
+
+servers:
+  - url: http://127.0.0.1:7912
+    description: 反连 hub（手机经 WebSocket/TCP 反连）
+  - url: http://127.0.0.1:7920
+    description: PC 侧编排器（UI 代理 + ADB shell）
+
+security:
+  - TokenAuth: []
+
+paths:
+  /v1/ping:
+    get:
+      summary: 存活检查
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Ok'
+                  - type: object
+                    properties:
+                      accessibility: {type: boolean}
+                      package: {type: string}
+                      sdk: {type: integer}
+
+  /v1/capabilities:
+    get:
+      summary: 能力清单
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  channels:
+                    type: object
+                    properties:
+                      ui: {$ref: '#/components/schemas/Channel'}
+                      shell: {$ref: '#/components/schemas/ShellChannel'}
+                      logcat: {$ref: '#/components/schemas/Channel'}
+                  device:
+                    type: object
+                    properties:
+                      serial: {type: string}
+                      model: {type: string}
+                      sdk: {type: string}
+
+  /v1/hierarchy:
+    get:
+      summary: 当前界面节点树
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  data:
+                    type: object
+                    properties:
+                      ok: {type: boolean}
+                      package: {type: string}
+                      nodeCount: {type: integer}
+                      root: {$ref: '#/components/schemas/Node'}
+
+  /v1/find:
+    post:
+      summary: 查找单个节点
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                timeoutMs: {type: integer, default: 0}
+              required: [selector]
+      responses:
+        '200':
+          description: 命中或 NOT_FOUND
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  node: {$ref: '#/components/schemas/NodeSummary'}
+                  error: {type: string}
+
+  /v1/findall:
+    post:
+      summary: 批量查找
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                timeoutMs: {type: integer, default: 0}
+                limit: {type: integer, default: 200}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  count: {type: integer}
+                  nodes:
+                    type: array
+                    items: {$ref: '#/components/schemas/NodeSummary'}
+
+  /v1/wait:
+    post:
+      summary: 等待元素出现或消失
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                state: {type: string, enum: [appear, gone], default: appear}
+                timeoutMs: {type: integer, default: 10000}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  state: {type: string}
+                  elapsedMs: {type: integer}
+
+  /v1/waitstable:
+    post:
+      summary: 等待界面静止
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeoutMs: {type: integer, default: 5000}
+                quietMs: {type: integer, default: 300}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  elapsedMs: {type: integer}
+
+  /v1/scroll:
+    post:
+      summary: 滚动查找
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                down: {type: boolean, default: true}
+                maxSwipes: {type: integer, default: 8}
+                timeoutMs: {type: integer, default: 2000}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  node: {$ref: '#/components/schemas/NodeSummary'}
+                  error: {type: string}
+
+  /v1/click:
+    post:
+      summary: 点击（选择器或坐标）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                x: {type: integer}
+                y: {type: integer}
+                timeoutMs: {type: integer, default: 3000}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/longclick:
+    post:
+      summary: 长按
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                timeoutMs: {type: integer, default: 3000}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/swipe:
+    post:
+      summary: 滑动
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [x1, y1, x2, y2]
+              properties:
+                x1: {type: integer}
+                y1: {type: integer}
+                x2: {type: integer}
+                y2: {type: integer}
+                durationMs: {type: integer, default: 300}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/input:
+    post:
+      summary: 文本输入
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selector, text]
+              properties:
+                selector: {$ref: '#/components/schemas/Selector'}
+                text: {type: string}
+                timeoutMs: {type: integer, default: 3000}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/global:
+    post:
+      summary: 全局动作
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [back, home, recents, notifications, quick_settings, lock]
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/app/start:
+    post:
+      summary: 拉起应用
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [package]
+              properties:
+                package: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/BoolResult'}
+
+  /v1/app/current:
+    get:
+      summary: 当前前台应用
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  package: {type: string}
+
+  /v1/screenshot:
+    get:
+      summary: 截图
+      responses:
+        '200':
+          description: PNG 或错误 JSON
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /v1/shell:
+    post:
+      summary: 执行 shell（设备侧 Shizuku/root 或编排器 ADB）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cmd]
+              properties:
+                cmd: {type: string}
+                timeoutMs: {type: integer, default: 30000}
+      responses:
+        '200':
+          description: 执行结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  exitCode: {type: integer}
+                  stdout: {type: string}
+                  stderr: {type: string}
+                  kind: {type: string}
+                  elapsedMs: {type: integer}
+
+  /v1/logcat:
+    get:
+      summary: 拉取设备日志（仅编排器）
+      parameters:
+        - name: lines
+          in: query
+          schema: {type: integer, default: 200}
+        - name: filter
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  lines:
+                    type: array
+                    items: {type: string}
+
+components:
+  securitySchemes:
+    TokenAuth:
+      type: apiKey
+      in: header
+      name: X-Auth-Token
+
+  responses:
+    BoolResult:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: {type: boolean}
+
+  schemas:
+    Ok:
+      type: object
+      properties:
+        ok: {type: boolean}
+
+    Error:
+      type: object
+      properties:
+        ok: {type: boolean, example: false}
+        error:
+          type: string
+          enum:
+            - UNAUTHORIZED
+            - ACCESSIBILITY_NOT_READY
+            - NO_WINDOW
+            - NOT_FOUND
+            - EMPTY_CMD
+            - SHELL_UNAVAILABLE
+            - SHIZUKU_PERMISSION_DENIED
+            - SHIZUKU_PROCESS_UNSUPPORTED
+            - SCREENSHOT_FAILED
+            - UNKNOWN_COMMAND
+            - NO_ROUTE
+
+    Channel:
+      type: object
+      properties:
+        available: {type: boolean}
+        state: {type: string}
+        transport: {type: string}
+
+    ShellChannel:
+      type: object
+      properties:
+        available: {type: boolean}
+        kind: {type: string, enum: [none, shizuku, root, adb-shell, adb-root, adb-other]}
+        via: {type: string, enum: [adb, on-device]}
+        hint: {type: string}
+
+    Selector:
+      type: object
+      description: 所有字段为「与」关系，全部可选
+      properties:
+        text: {type: string}
+        textContains: {type: string}
+        textMatches: {type: string}
+        textStartsWith: {type: string}
+        desc: {type: string}
+        descContains: {type: string}
+        descMatches: {type: string}
+        id: {type: string}
+        idMatches: {type: string}
+        className: {type: string}
+        classNameMatches: {type: string}
+        packageName: {type: string}
+        clickable: {type: boolean}
+        enabled: {type: boolean}
+        checked: {type: boolean}
+        selected: {type: boolean}
+        focused: {type: boolean}
+        scrollable: {type: boolean}
+        editable: {type: boolean}
+        index: {type: integer, description: 匹配结果中第 N 个，0 起}
+        visibleOnly: {type: boolean, default: true}
+
+    NodeSummary:
+      type: object
+      properties:
+        class: {type: string}
+        text: {type: string}
+        desc: {type: string}
+        id: {type: string}
+        pkg: {type: string}
+        bounds:
+          type: array
+          items: {type: integer}
+          minItems: 4
+          maxItems: 4
+        clickable: {type: boolean}
+        enabled: {type: boolean}
+
+    Node:
+      allOf:
+        - $ref: '#/components/schemas/NodeSummary'
+        - type: object
+          properties:
+            hint: {type: string}
+            center:
+              type: array
+              items: {type: integer}
+            longClickable: {type: boolean}
+            scrollable: {type: boolean}
+            editable: {type: boolean}
+            checkable: {type: boolean}
+            checked: {type: boolean}
+            selected: {type: boolean}
+            focused: {type: boolean}
+            visible: {type: boolean}
+            depth: {type: integer}
+            children:
+              type: array
+              items: {$ref: '#/components/schemas/Node'}

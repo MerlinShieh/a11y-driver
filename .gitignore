@@ -1,0 +1,40 @@
+# 构建产物
+build/
+engine/app/build/
+engine/.gradle/
+.gradle/
+*.apk
+*.aab
+*.aar
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.log
+
+# 本地配置（含本机绝对路径）
+engine/local.properties
+env-backup.txt
+local.properties
+
+# 测试报告与截图（含设备信息、个人界面）
+reports/
+!reports/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# 系统临时
+*~
+*.bak

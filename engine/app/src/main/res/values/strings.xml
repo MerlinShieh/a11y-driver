@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MobileAppAuto Engine</string>
+    <string name="a11y_label">MobileAppAuto 执行引擎</string>
+    <string name="a11y_desc">开启后，本应用可通过无障碍服务读取界面节点、执行点击滑动输入等操作。仅在你主动启动服务时工作。</string>
+</resources>
